@@ -25,7 +25,7 @@ ChatToMD solves this: paste a share link, and the app fetches the conversation, 
 3. Paste the link into ChatToMD and select the source
 4. Click **Extract Conversation** and download the `.md` file
 
-> Only works with **public** share links.
+> ⚠️ Only works with **public** share links. Only export conversations you own or have explicit permission to export.
 
 ---
 
