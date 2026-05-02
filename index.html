@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chat Extractor</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0e0e10;
+      --surface: #18181c;
+      --border: #2e2e36;
+      --accent-gpt: #c8f04a;
+      --accent-claude: #d4a8ff;
+      --accent: #c8f04a;
+      --text: #e8e8ec;
+      --muted: #6b6b78;
+      --error: #ff5c5c;
+      --mono: 'DM Mono', monospace;
+      --display: 'Syne', sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 3rem;
+    }
+
+    .header h1 {
+      font-family: var(--display);
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+
+    .header h1 span { color: var(--accent); transition: color 0.3s; }
+    .header p {
+      margin-top: 0.75rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 600px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    label {
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 0.5rem;
+    }
+
+    .bot-toggle {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+
+    .bot-toggle button {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 0.65rem 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      letter-spacing: 0.03em;
+    }
+
+    .bot-toggle button:hover { color: var(--text); border-color: #555; }
+    .bot-toggle button:active { transform: scale(0.97); }
+
+    #btn-chatgpt.active {
+      background: var(--accent-gpt);
+      border-color: var(--accent-gpt);
+      color: #0e0e10;
+      font-weight: 700;
+    }
+
+    #btn-claude.active {
+      background: var(--accent-claude);
+      border-color: var(--accent-claude);
+      color: #0e0e10;
+      font-weight: 700;
+    }
+
+    input[type="text"] {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      padding: 0.75rem 1rem;
+      outline: none;
+      transition: border-color 0.2s;
+      width: 100%;
+    }
+
+    input[type="text"]:focus { border-color: var(--accent); }
+    input[type="text"]::placeholder { color: var(--muted); }
+
+    #extract-btn {
+      background: var(--accent);
+      color: #0e0e10;
+      border: none;
+      border-radius: 8px;
+      font-family: var(--display);
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      padding: 0.8rem 1.5rem;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      width: 100%;
+    }
+
+    #extract-btn:hover { opacity: 0.88; }
+    #extract-btn:active { transform: scale(0.98); }
+    #extract-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    hr { border: none; border-top: 1px solid var(--border); }
+
+    .output-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      display: inline-block;
+      margin-right: 0.5rem;
+      transition: background 0.3s;
+    }
+    .status-dot.active { background: var(--accent); animation: pulse 1.2s infinite; }
+    .status-dot.done   { background: #4adf90; }
+    .status-dot.error  { background: var(--error); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    #output-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      min-height: 160px;
+      padding: 1rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      white-space: pre-wrap;
+      overflow-y: auto;
+      max-height: 320px;
+      line-height: 1.7;
+    }
+
+    #output-box.has-content { color: var(--text); border-color: #3e3e4a; }
+    #output-box.error       { color: var(--error); border-color: var(--error); }
+
+    #download-btn {
+      display: none;
+      background: transparent;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      padding: 0.6rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      width: auto;
+      align-self: flex-start;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    #download-btn:hover { background: var(--accent); color: #0e0e10; opacity: 1; }
+
+    .note {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.6;
+      background: #13131a;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.65rem 0.85rem;
+    }
+
+    .footer {
+      margin-top: 2.5rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>Chat <span id="title-accent">Extractor</span></h1>
+    <p>paste a shared chat url → get a clean markdown file</p>
+  </div>
+
+  <div class="card">
+
+    <div>
+      <label>Source</label>
+      <div class="bot-toggle">
+        <button id="btn-chatgpt" class="active" onclick="selectBot('chatgpt')">
+          ⬡ &nbsp;ChatGPT
+        </button>
+        <button id="btn-claude" onclick="selectBot('claude')">
+          ◆ &nbsp;Claude
+        </button>
+      </div>
+    </div>
+
+    <div>
+      <label>Shared URL</label>
+      <input type="text" id="url-input" placeholder="https://chatgpt.com/share/..." />
+    </div>
+
+    <div class="note" id="hint">
+      Make sure the conversation is shared publicly before extracting.
+    </div>
+
+    <button id="extract-btn" onclick="extract()">Extract Conversation</button>
+
+    <hr/>
+
+    <div class="output-label">
+      <label>
+        <span class="status-dot" id="status-dot"></span>
+        Output
+      </label>
+    </div>
+
+    <div id="output-box">Waiting for a URL...</div>
+
+    <button id="download-btn" onclick="download()">⬇ Download .md</button>
+
+  </div>
+
+  <div class="footer">runs locally — your conversations never leave your machine</div>
+
+  <script>
+    let selectedBot = 'chatgpt';
+    let markdownContent = '';
+
+    const config = {
+      chatgpt: {
+        placeholder: 'https://chatgpt.com/share/...',
+        hint: 'ChatGPT: Open the chat → Share → Copy link → paste here.',
+        accent: '#c8f04a',
+      },
+      claude: {
+        placeholder: 'https://claude.ai/share/...',
+        hint: 'Claude: Open the chat → Share → Copy link → paste here.',
+        accent: '#d4a8ff',
+      },
+    };
+
+    function selectBot(bot) {
+      selectedBot = bot;
+      document.getElementById('btn-chatgpt').classList.toggle('active', bot === 'chatgpt');
+      document.getElementById('btn-claude').classList.toggle('active', bot === 'claude');
+      document.getElementById('url-input').placeholder = config[bot].placeholder;
+      document.getElementById('url-input').value = '';
+      document.getElementById('hint').textContent = config[bot].hint;
+      document.documentElement.style.setProperty('--accent', config[bot].accent);
+    }
+
+    async function extract() {
+      const url = document.getElementById('url-input').value.trim();
+      const outputBox = document.getElementById('output-box');
+      const dot = document.getElementById('status-dot');
+      const downloadBtn = document.getElementById('download-btn');
+      const btn = document.getElementById('extract-btn');
+
+      const expectedDomain = selectedBot === 'chatgpt' ? 'chatgpt.com/share' : 'claude.ai/share';
+      if (!url || !url.includes(expectedDomain)) {
+        setOutput(`⚠ Please enter a valid ${selectedBot === 'chatgpt' ? 'ChatGPT' : 'Claude'} share link.\nExpected format: ${config[selectedBot].placeholder}`, 'error');
+        dot.className = 'status-dot error';
+        return;
+      }
+
+      dot.className = 'status-dot active';
+      outputBox.className = '';
+      outputBox.textContent = 'Launching browser and fetching conversation...\n(this takes ~5–10 seconds)';
+      downloadBtn.style.display = 'none';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, bot: selectedBot })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          setOutput('✗ Error: ' + (data.error || 'Unknown error'), 'error');
+          dot.className = 'status-dot error';
+          return;
+        }
+
+        markdownContent = data.markdown;
+        outputBox.className = 'has-content';
+        outputBox.textContent = markdownContent;
+        dot.className = 'status-dot done';
+        downloadBtn.style.display = 'inline-block';
+
+      } catch (err) {
+        setOutput('✗ Could not connect to server.\nMake sure the server is running with: npm start', 'error');
+        dot.className = 'status-dot error';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function setOutput(msg, type) {
+      const box = document.getElementById('output-box');
+      box.textContent = msg;
+      box.className = type === 'error' ? 'error' : 'has-content';
+    }
+
+    function download() {
+      if (!markdownContent) return;
+      const blob = new Blob([markdownContent], { type: 'text/markdown' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'conversation.md';
+      a.click();
+    }
+
+    document.getElementById('url-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') extract();
+    });
+  </script>
+</body>
+</html>
