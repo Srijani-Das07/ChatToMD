@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 const path = require('path');
 
 const app = express();
@@ -8,14 +8,24 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
+function getChromePath() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  if (process.platform === 'win32') return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  if (process.platform === 'darwin') return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  return '/usr/bin/google-chrome-stable';
+}
+
+const LAUNCH_OPTIONS = () => ({
+  executablePath: getChromePath(),
+  headless: 'new',
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+});
+
 // ─────────────────────────────────────────────
 // ChatGPT: load page, extract __NEXT_DATA__ + HTML
 // ─────────────────────────────────────────────
 async function fetchChatGPT(url) {
-  const browser = await puppeteer.launch({
-  headless: 'new',
-  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
-  });
+  const browser = await puppeteer.launch(LAUNCH_OPTIONS());
   try {
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -41,10 +51,7 @@ async function fetchChatGPT(url) {
 // Claude: intercept /api/chat_snapshots/ response
 // ─────────────────────────────────────────────
 async function fetchClaude(url) {
-  const browser = await puppeteer.launch({
-  headless: 'new',
-  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
-  });
+  const browser = await puppeteer.launch(LAUNCH_OPTIONS());
   try {
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -70,7 +77,6 @@ async function fetchClaude(url) {
 
 // ─────────────────────────────────────────────
 // Extract text from a ChatGPT parts array
-// Parts can be strings, text objects, or code objects
 // ─────────────────────────────────────────────
 function extractPartsText(parts) {
   return (parts || []).map(p => {
@@ -82,7 +88,7 @@ function extractPartsText(parts) {
 }
 
 // ─────────────────────────────────────────────
-// Parse ChatGPT — returns ordered list of turns (no role labels)
+// Parse ChatGPT
 // ─────────────────────────────────────────────
 function parseChatGPT({ html, nextData }, url) {
   if (nextData) {
@@ -91,7 +97,6 @@ function parseChatGPT({ html, nextData }, url) {
       const { mapping, title } = data;
       const nodes = Object.values(mapping);
       const rootNode = nodes.find(n => !n.parent || !mapping[n.parent]);
-
       if (rootNode) {
         const turns = [];
         const walk = (nodeId) => {
@@ -128,8 +133,7 @@ function parseChatGPT({ html, nextData }, url) {
 }
 
 // ─────────────────────────────────────────────
-// Parse Claude — returns ordered list of turns (no role labels)
-// Logs raw message keys to help debug structure if needed
+// Parse Claude
 // ─────────────────────────────────────────────
 function parseClaude(data, url) {
   if (!data) throw new Error('No data intercepted from Claude. The page may have loaded too slowly or the link is invalid.');
@@ -139,7 +143,6 @@ function parseClaude(data, url) {
 
   if (rawMessages.length === 0) throw new Error('Conversation found but contains no messages.');
 
-  // Log the keys of the first message for debugging
   if (rawMessages[0]) console.log('Claude first message keys:', Object.keys(rawMessages[0]));
 
   const turns = [];
@@ -148,13 +151,8 @@ function parseClaude(data, url) {
     if (typeof msg.content === 'string') {
       text = msg.content.trim();
     } else if (Array.isArray(msg.content)) {
-      text = msg.content
-        .filter(b => b.type === 'text')
-        .map(b => b.text)
-        .join('\n')
-        .trim();
+      text = msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
     } else if (typeof msg.text === 'string') {
-      // Some API shapes use msg.text directly
       text = msg.text.trim();
     }
     if (text) turns.push(text);
@@ -167,7 +165,7 @@ function parseClaude(data, url) {
 }
 
 // ─────────────────────────────────────────────
-// Build Markdown — no role labels, just dividers
+// Build Markdown
 // ─────────────────────────────────────────────
 function buildMarkdown({ title, turns, url }) {
   const date = new Date().toISOString().split('T')[0];
@@ -207,14 +205,11 @@ app.post('/extract', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// POST /debug-claude — dumps raw first message shape
+// POST /debug-claude
 // ─────────────────────────────────────────────
 app.post('/debug-claude', async (req, res) => {
   const { url } = req.body;
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
+  const browser = await puppeteer.launch(LAUNCH_OPTIONS());
   try {
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
