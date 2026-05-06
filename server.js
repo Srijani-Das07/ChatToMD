@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 const path = require('path');
 
 const app = express();
@@ -8,21 +8,13 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-function getChromePath() {
-  const { platform } = process;
-  if (platform === 'win32') return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-  if (platform === 'darwin') return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  return '/usr/bin/google-chrome';
-}
-
 // ─────────────────────────────────────────────
 // ChatGPT: load page, extract __NEXT_DATA__ + HTML
 // ─────────────────────────────────────────────
 async function fetchChatGPT(url) {
   const browser = await puppeteer.launch({
-    executablePath: getChromePath(),
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+  headless: 'new',
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
   });
   try {
     const page = await browser.newPage();
@@ -50,9 +42,8 @@ async function fetchChatGPT(url) {
 // ─────────────────────────────────────────────
 async function fetchClaude(url) {
   const browser = await puppeteer.launch({
-    executablePath: getChromePath(),
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+  headless: 'new',
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
   });
   try {
     const page = await browser.newPage();
@@ -221,7 +212,6 @@ app.post('/extract', async (req, res) => {
 app.post('/debug-claude', async (req, res) => {
   const { url } = req.body;
   const browser = await puppeteer.launch({
-    executablePath: getChromePath(),
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
