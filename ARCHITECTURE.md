@@ -20,9 +20,27 @@ Rather than scraping the rendered DOM (which is fragile and dependent on CSS cla
 
 ---
 
+## Why Two Different Strategies
+
+ChatGPT and Claude are built differently at a fundamental level, so a single extraction strategy cannot cover both.
+
+ChatGPT's share pages are rendered by Next.js, which performs server-side rendering and embeds the full conversation data into the HTML before it ever reaches the browser. The data is sitting in the page's `__NEXT_DATA__` script tag and can be read directly from the DOM — no need to watch network traffic at all.
+
+Claude's share pages do not use server-side rendering for conversation content. The page shell loads first, then the browser makes a separate API request at runtime to fetch the conversation JSON. There is no equivalent of `__NEXT_DATA__` to read; the data only exists as a network response.
+
+Trying to apply the ChatGPT approach to Claude would yield nothing, because the conversation is never embedded in the HTML. Trying to apply the Claude approach to ChatGPT would be unnecessarily complex, because the data is already present in the DOM before any network request is made.
+
+---
+
 ### ChatGPT: `__NEXT_DATA__` Extraction
 
 ChatGPT's shared pages are built with Next.js. Next.js embeds the initial page data as a JSON blob inside a `<script id="__NEXT_DATA__">` tag in the HTML. This tag is populated server-side, before the page even reaches the browser, so it contains the full conversation before any JavaScript runs.
+
+**Why `__NEXT_DATA__` instead of DOM parsing**
+
+The alternative would be to let the page render fully and then scrape the visible message elements from the DOM. That approach has two problems. First, production builds of React apps use minified, hashed CSS class names, so any selector targeting a class like `markdown` will break whenever ChatGPT redeploys. Second, scraping rendered HTML means working with a lossy representation — code blocks, formatting, and structure have already been transformed into display elements, making faithful reconstruction difficult.
+
+`__NEXT_DATA__` is a structured JSON payload written by the server, not a rendered artifact. It contains the raw conversation data exactly as the backend provided it, independent of how the frontend chooses to display it. Selectors and class names are irrelevant.
 
 ChatToMD extracts this tag directly from the live DOM after the page loads. Because ChatGPT's Next.js data structure has varied across versions, multiple known paths are tried in order:
 
@@ -54,7 +72,13 @@ GET /api/chat_snapshots/{share_id}
 GET /api/share/{share_id}/conversation
 ```
 
-Rather than attaching a passive `page.on('response')` listener (which is subject to race conditions), ChatToMD uses `page.waitForResponse()` in a `Promise.all` alongside `page.goto()`. This ensures the response is awaited correctly regardless of how quickly the page loads.
+**Why `waitForResponse` instead of `page.on('response')`**
+
+`page.on('response', async (response) => { ... })` attaches a passive event listener. The callback is async, which means the JSON read happens after the event fires — but `page.goto()` does not wait for any of those callbacks to complete. On a fast connection, `goto()` can resolve with `waitUntil: 'networkidle2'` before `response.json()` has finished, leaving `conversationData` as `null`. The timing depends entirely on network speed and system load, making the bug intermittent and hard to reproduce.
+
+`page.waitForResponse()` returns a Promise that resolves to the matched response object only after the response has been received. Wrapping it in a `Promise.all` alongside `page.goto()` means both are set up before navigation begins, so the response cannot arrive before the listener is ready. The data is fully available before execution continues.
+
+Rather than attaching a passive `page.on('response')` listener, ChatToMD uses `page.waitForResponse()` in a `Promise.all` alongside `page.goto()`. This ensures the response is awaited correctly regardless of how quickly the page loads.
 
 ```js
 const [conversationResponse] = await Promise.all([
