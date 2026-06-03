@@ -54,7 +54,6 @@ Open `http://localhost:3000`.
 
 ## Known Limitations
 
-- Conversations containing code blocks may not extract completely [fix in progress]
 - Only public share links are supported
 - If ChatGPT or Claude changes their page or API structure, the parser may need an update
 
