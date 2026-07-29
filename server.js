@@ -8,15 +8,46 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
+// ─────────────────────────────────────────────
+// Proxy config (ScraperAPI) — routes Puppeteer's traffic through
+// a rotating IP pool instead of Render's datacenter IP, which
+// ChatGPT/Claude's bot protection was blocking/challenging.
+// Set SCRAPERAPI_KEY in your host's environment variables.
+// ─────────────────────────────────────────────
+const SCRAPERAPI_KEY = process.env.SCRAPERAPI_KEY || '';
+const USE_PROXY = Boolean(SCRAPERAPI_KEY);
+const PROXY_SERVER = 'proxy-server.scraperapi.com';
+const PROXY_PORT = '8001';
+
 const LAUNCH_OPTIONS = () => ({
   headless: 'new',
+  ignoreHTTPSErrors: true, // required for ScraperAPI proxy mode (it terminates SSL)
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-blink-features=AutomationControlled',
     '--disable-dev-shm-usage',
+    ...(USE_PROXY ? [`--proxy-server=http://${PROXY_SERVER}:${PROXY_PORT}`] : []),
   ],
 });
+
+// Authenticate against the proxy and block heavy/unneeded resource
+// types (images, fonts, media, stylesheets) to save API credits —
+// only need HTML/JS/XHR responses, not rendered visuals.
+async function preparePage(page) {
+  if (USE_PROXY) {
+    await page.authenticate({ username: 'scraperapi', password: SCRAPERAPI_KEY });
+  }
+  await page.setRequestInterception(true);
+  page.on('request', (req) => {
+    const blocked = ['image', 'font', 'media', 'stylesheet'];
+    if (blocked.includes(req.resourceType())) {
+      req.abort();
+    } else {
+      req.continue();
+    }
+  });
+}
 
 // Shared user agent
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -33,6 +64,7 @@ async function fetchChatGPT(url) {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
+    await preparePage(page);
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
@@ -80,6 +112,7 @@ async function fetchClaude(url) {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
+    await preparePage(page);
 
     // Set up the response waiter BEFORE navigation so we don't miss it
     const isConversationResponse = (res) => {
@@ -264,6 +297,7 @@ app.post('/debug-claude', async (req, res) => {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
+    await preparePage(page);
 
     const isConversationResponse = (r) =>
       r.url().includes('/api/chat_snapshots/') ||
@@ -300,4 +334,5 @@ app.post('/debug-claude', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✓ Chat Extractor running at http://localhost:${PORT}`);
+  console.log(USE_PROXY ? '✓ Proxy mode: ON (ScraperAPI)' : '⚠ Proxy mode: OFF (no SCRAPERAPI_KEY set — requests go out on this host\'s raw IP)');
 });
