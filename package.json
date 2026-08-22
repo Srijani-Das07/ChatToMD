@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "postinstall": "rm -rf \"$PUPPETEER_CACHE_DIR\" && npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "express": "^4.18.2",
