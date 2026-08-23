@@ -5,8 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
-    "postinstall": "echo \"BUILD-TIME PUPPETEER_CACHE_DIR=[$PUPPETEER_CACHE_DIR]\" && rm -rf \"$PUPPETEER_CACHE_DIR\" && npx puppeteer browsers install chrome && echo '--- INSTALLED CONTENTS ---' && find \"$PUPPETEER_CACHE_DIR\" -maxdepth 4"
+    "dev": "node --watch server.js"
   },
   "dependencies": {
     "express": "^4.18.2",

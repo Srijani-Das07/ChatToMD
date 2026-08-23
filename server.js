@@ -8,20 +8,19 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// ─────────────────────────────────────────────
-// Proxy config (ScraperAPI) — routes Puppeteer's traffic through
-// a rotating IP pool instead of Render's datacenter IP, which
-// ChatGPT/Claude's bot protection was blocking/challenging.
-// Set SCRAPERAPI_KEY in your host's environment variables.
-// ─────────────────────────────────────────────
+// Routes Puppeteer traffic through a rotating proxy IP instead of the
+// host's own datacenter IP, which ChatGPT/Claude's bot protection blocks.
 const SCRAPERAPI_KEY = process.env.SCRAPERAPI_KEY || '';
 const USE_PROXY = Boolean(SCRAPERAPI_KEY);
 const PROXY_SERVER = 'proxy-server.scraperapi.com';
 const PROXY_PORT = '8001';
 
+// executablePath comes from PUPPETEER_EXECUTABLE_PATH in Docker (apt-installed
+// Chromium); left undefined locally so Puppeteer uses its own browser.
 const LAUNCH_OPTIONS = () => ({
   headless: 'new',
-  ignoreHTTPSErrors: true, // required for ScraperAPI proxy mode (it terminates SSL)
+  ignoreHTTPSErrors: true, // required for ScraperAPI proxy mode
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -31,9 +30,8 @@ const LAUNCH_OPTIONS = () => ({
   ],
 });
 
-// Authenticate against the proxy and block heavy/unneeded resource
-// types (images, fonts, media, stylesheets) to save API credits —
-// only need HTML/JS/XHR responses, not rendered visuals.
+// Authenticates against the proxy and blocks non-essential resource types
+// (images/fonts/media/css) to save proxy credits — only HTML/JS/XHR matter.
 async function preparePage(page) {
   if (USE_PROXY) {
     await page.authenticate({ username: 'scraperapi', password: SCRAPERAPI_KEY });
@@ -49,16 +47,10 @@ async function preparePage(page) {
   });
 }
 
-// Shared user agent
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// ─────────────────────────────────────────────
-// ChatGPT: load page, extract __NEXT_DATA__ + HTML
-// Bug fixes:
-//   - Use domcontentloaded instead of networkidle2 (faster, more reliable)
-//   - Try multiple known __NEXT_DATA__ paths before giving up
-//   - Improved DOM fallback: use innerText per message block, not regex on full HTML
-// ─────────────────────────────────────────────
+// Loads a ChatGPT share page and captures __NEXT_DATA__ plus a raw-DOM
+// fallback, since ChatGPT's Next.js data structure has varied over time.
 async function fetchChatGPT(url) {
   const browser = await puppeteer.launch(LAUNCH_OPTIONS());
   try {
@@ -68,7 +60,6 @@ async function fetchChatGPT(url) {
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-    // Wait for messages to appear; fall back to a fixed delay if they don't
     try {
       await page.waitForSelector('[data-message-author-role]', { timeout: 12000 });
     } catch {
@@ -83,7 +74,7 @@ async function fetchChatGPT(url) {
 
     const html = await page.content();
 
-    // Also capture DOM text as a structured fallback while the page is still open
+    // Captured while the page is open, used only if __NEXT_DATA__ parsing fails
     const domTurns = await page.evaluate(() => {
       const nodes = document.querySelectorAll('[data-message-author-role]');
       const turns = [];
@@ -100,13 +91,8 @@ async function fetchChatGPT(url) {
   }
 }
 
-// ─────────────────────────────────────────────
-// Claude: intercept /api/chat_snapshots/ response
-// Bug fixes:
-//   - Use waitForResponse instead of page.on('response') to eliminate race condition
-//   - Broaden URL match to cover API path variations
-//   - Use domcontentloaded + waitForResponse instead of networkidle2 + fixed delay
-// ─────────────────────────────────────────────
+// Loads a Claude share page and intercepts the conversation API response
+// directly, since Claude's content isn't present in the initial HTML/DOM.
 async function fetchClaude(url) {
   const browser = await puppeteer.launch(LAUNCH_OPTIONS());
   try {
@@ -114,7 +100,7 @@ async function fetchClaude(url) {
     await page.setUserAgent(UA);
     await preparePage(page);
 
-    // Set up the response waiter BEFORE navigation so we don't miss it
+    // Waiter must be armed before navigation starts, or the response can be missed
     const isConversationResponse = (res) => {
       const u = res.url();
       return (
@@ -136,9 +122,7 @@ async function fetchClaude(url) {
   }
 }
 
-// ─────────────────────────────────────────────
-// Extract text from a ChatGPT parts array
-// ─────────────────────────────────────────────
+// Flattens a ChatGPT message's `parts` array (text and code blocks) to a string.
 function extractPartsText(parts) {
   return (parts || []).map(p => {
     if (typeof p === 'string') return p;
@@ -148,15 +132,11 @@ function extractPartsText(parts) {
   }).filter(Boolean).join('\n').trim();
 }
 
-// ─────────────────────────────────────────────
-// Parse ChatGPT
-// Bug fixes:
-//   - Try multiple known __NEXT_DATA__ paths (structure varies by ChatGPT version)
-//   - DOM fallback now uses live innerText captured by Puppeteer (not regex on HTML)
-// ─────────────────────────────────────────────
+// Walks ChatGPT's __NEXT_DATA__ message tree into an ordered list of turns,
+// falling back to the raw DOM text if the tree is missing or unparseable.
 function parseChatGPT({ html, nextData, domTurns }, url) {
   if (nextData) {
-    // Try all known data paths — ChatGPT's Next.js structure has varied over time
+    // ChatGPT's Next.js payload shape has changed across releases — try each known path
     const data =
       nextData?.props?.pageProps?.serverResponse?.data ||
       nextData?.props?.pageProps?.data ||
@@ -189,7 +169,6 @@ function parseChatGPT({ html, nextData, domTurns }, url) {
     }
   }
 
-  // DOM fallback: use the live innerText we captured in fetchChatGPT
   if (domTurns && domTurns.length > 0) {
     console.log(`[ChatGPT] __NEXT_DATA__ parse failed; using DOM fallback (${domTurns.length} turns)`);
     return { title: 'ChatGPT Conversation', turns: domTurns, url };
@@ -198,13 +177,9 @@ function parseChatGPT({ html, nextData, domTurns }, url) {
   throw new Error('Could not extract ChatGPT conversation. The link may be private or expired.');
 }
 
-// ─────────────────────────────────────────────
-// Parse Claude
-// Bug fixes:
-//   - Prefer content blocks over msg.text (content has full formatting)
-//   - Fall back to msg.text only when content is missing/empty, with a warning
-//   - Log meaningful info if no turns are found to aid debugging
-// ─────────────────────────────────────────────
+// Converts Claude's intercepted API payload into an ordered list of turns.
+// Structured content blocks are preferred over the plain-text `msg.text`
+// field since they preserve formatting; msg.text is a last-resort fallback.
 function parseClaude(data, url) {
   if (!data) throw new Error('No data intercepted from Claude. The link may be private, expired, or the page structure changed.');
 
@@ -219,17 +194,14 @@ function parseClaude(data, url) {
   for (const msg of rawMessages) {
     let text = '';
 
-    // Prefer structured content blocks (richer, includes formatting)
     if (Array.isArray(msg.content) && msg.content.length > 0) {
       text = msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
     }
 
-    // Fall back to top-level string content
     if (!text && typeof msg.content === 'string') {
       text = msg.content.trim();
     }
 
-    // Last resort: msg.text (plain-text stripped version)
     if (!text && typeof msg.text === 'string') {
       console.warn('[Claude] Using msg.text fallback for a message — content blocks were empty.');
       text = msg.text.trim();
@@ -247,9 +219,6 @@ function parseClaude(data, url) {
   return { title, turns, url };
 }
 
-// ─────────────────────────────────────────────
-// Build Markdown
-// ─────────────────────────────────────────────
 function buildMarkdown({ title, turns, url }) {
   const date = new Date().toISOString().split('T')[0];
   const DIVIDER = '='.repeat(40);
@@ -260,9 +229,6 @@ function buildMarkdown({ title, turns, url }) {
   return lines.join('\n');
 }
 
-// ─────────────────────────────────────────────
-// POST /extract
-// ─────────────────────────────────────────────
 app.post('/extract', async (req, res) => {
   const { url, bot } = req.body;
   if (!url) return res.status(400).json({ error: 'No URL provided.' });
@@ -287,10 +253,8 @@ app.post('/extract', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
-// POST /debug-claude
-// Bug fixes: same race condition fix applied here too
-// ─────────────────────────────────────────────
+// Diagnostic endpoint: returns the raw shape of Claude's intercepted response
+// instead of parsed Markdown, useful when parseClaude() needs debugging.
 app.post('/debug-claude', async (req, res) => {
   const { url } = req.body;
   const browser = await puppeteer.launch(LAUNCH_OPTIONS());
