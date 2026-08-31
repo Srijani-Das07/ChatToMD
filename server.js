@@ -19,14 +19,14 @@ const PROXY_PORT = '8001';
 // Chromium); left undefined locally so Puppeteer uses its own browser.
 const LAUNCH_OPTIONS = () => ({
   headless: 'new',
-  ignoreHTTPSErrors: true, // required for ScraperAPI proxy mode
+  acceptInsecureCerts: true, // trusts the proxy's re-signed TLS cert
   executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-blink-features=AutomationControlled',
     '--disable-dev-shm-usage',
-    ...(USE_PROXY ? [`--proxy-server=http://${PROXY_SERVER}:${PROXY_PORT}`] : []),
+    ...(USE_PROXY ? [`--proxy-server=http://${PROXY_SERVER}:${PROXY_PORT}`, '--ignore-certificate-errors'] : []),
   ],
 });
 
