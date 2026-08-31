@@ -61,9 +61,9 @@ async function fetchChatGPT(url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
     try {
-      await page.waitForSelector('[data-message-author-role]', { timeout: 12000 });
+      await page.waitForSelector('[data-message-author-role]', { timeout: 30000 });
     } catch {
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, 8000));
     }
 
     const nextData = await page.evaluate(() => {
@@ -84,6 +84,16 @@ async function fetchChatGPT(url) {
       });
       return turns;
     });
+
+    console.log('[ChatGPT] page title:', await page.title());
+    console.log('[ChatGPT] __NEXT_DATA__ found:', Boolean(nextData));
+    if (nextData) {
+      console.log('[ChatGPT] __NEXT_DATA__ pageProps keys:', Object.keys(nextData?.props?.pageProps || {}));
+    }
+    console.log('[ChatGPT] DOM selector hits:', domTurns.length);
+    if (!nextData && domTurns.length === 0) {
+      console.log('[ChatGPT] HTML snippet:', html.slice(0, 500));
+    }
 
     return { html, nextData, domTurns };
   } finally {
