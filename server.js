@@ -306,7 +306,13 @@ app.post('/debug-claude', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`✓ Chat Extractor running at http://localhost:${PORT}`);
   console.log(USE_PROXY ? '✓ Proxy mode: ON (ScraperAPI)' : '⚠ Proxy mode: OFF (no SCRAPERAPI_KEY set — requests go out on this host\'s raw IP)');
 });
+
+// Extraction requests can run 30-80s (proxy latency + page render waits),
+// longer than Render's reverse-proxy default. These keep the connection
+// alive so long requests aren't cut off mid-response.
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 120000;
