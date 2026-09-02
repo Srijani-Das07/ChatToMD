@@ -8,32 +8,31 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// Routes Puppeteer traffic through a rotating proxy IP instead of the
-// host's own datacenter IP, which ChatGPT/Claude's bot protection blocks.
+// Routes Puppeteer traffic through ScraperAPI's proxy pool as a fallback
+// when a direct request is blocked by the target site's bot protection.
 const SCRAPERAPI_KEY = process.env.SCRAPERAPI_KEY || '';
 const USE_PROXY = Boolean(SCRAPERAPI_KEY);
 const PROXY_SERVER = 'proxy-server.scraperapi.com';
 const PROXY_PORT = '8001';
 
-// executablePath comes from PUPPETEER_EXECUTABLE_PATH in Docker (apt-installed
-// Chromium); left undefined locally so Puppeteer uses its own browser.
-const LAUNCH_OPTIONS = () => ({
+// executablePath is set to PUPPETEER_EXECUTABLE_PATH in the Docker image
+// (apt-installed Chromium); undefined locally, where Puppeteer resolves
+// its own browser.
+const LAUNCH_OPTIONS = (useProxy) => ({
   headless: 'new',
-  acceptInsecureCerts: true, // trusts the proxy's re-signed TLS cert
+  acceptInsecureCerts: useProxy, // accepts the proxy's TLS certificate
   executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-blink-features=AutomationControlled',
     '--disable-dev-shm-usage',
-    ...(USE_PROXY ? [`--proxy-server=http://${PROXY_SERVER}:${PROXY_PORT}`, '--ignore-certificate-errors'] : []),
+    ...(useProxy ? [`--proxy-server=http://${PROXY_SERVER}:${PROXY_PORT}`, '--ignore-certificate-errors'] : []),
   ],
 });
 
-// Authenticates against the proxy and blocks non-essential resource types
-// (images/fonts/media/css) to save proxy credits — only HTML/JS/XHR matter.
-async function preparePage(page) {
-  if (USE_PROXY) {
+async function preparePage(page, useProxy) {
+  if (useProxy) {
     await page.authenticate({ username: 'scraperapi', password: SCRAPERAPI_KEY });
   }
   await page.setRequestInterception(true);
@@ -49,21 +48,20 @@ async function preparePage(page) {
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// Loads a ChatGPT share page and captures __NEXT_DATA__ plus a raw-DOM
-// fallback, since ChatGPT's Next.js data structure has varied over time.
-async function fetchChatGPT(url) {
-  const browser = await puppeteer.launch(LAUNCH_OPTIONS());
+async function fetchChatGPT(url, useProxy) {
+  const browser = await puppeteer.launch(LAUNCH_OPTIONS(useProxy));
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
-    await preparePage(page);
+    await preparePage(page, useProxy);
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: useProxy ? 45000 : 20000 });
 
+    // Direct attempts use a short timeout; proxied attempts use the full budget.
     try {
-      await page.waitForSelector('[data-message-author-role]', { timeout: 30000 });
+      await page.waitForSelector('[data-message-author-role]', { timeout: useProxy ? 30000 : 12000 });
     } catch {
-      await new Promise(r => setTimeout(r, 8000));
+      await new Promise(r => setTimeout(r, useProxy ? 8000 : 3000));
     }
 
     const nextData = await page.evaluate(() => {
@@ -74,7 +72,6 @@ async function fetchChatGPT(url) {
 
     const html = await page.content();
 
-    // Captured while the page is open, used only if __NEXT_DATA__ parsing fails
     const domTurns = await page.evaluate(() => {
       const nodes = document.querySelectorAll('[data-message-author-role]');
       const turns = [];
@@ -101,16 +98,15 @@ async function fetchChatGPT(url) {
   }
 }
 
-// Loads a Claude share page and intercepts the conversation API response
-// directly, since Claude's content isn't present in the initial HTML/DOM.
-async function fetchClaude(url) {
-  const browser = await puppeteer.launch(LAUNCH_OPTIONS());
+async function fetchClaude(url, useProxy) {
+  const browser = await puppeteer.launch(LAUNCH_OPTIONS(useProxy));
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
-    await preparePage(page);
+    await preparePage(page, useProxy);
 
-    // Waiter must be armed before navigation starts, or the response can be missed
+    // The response listener must be registered before navigation starts,
+    // otherwise the target response may be missed.
     const isConversationResponse = (res) => {
       const u = res.url();
       return (
@@ -121,8 +117,8 @@ async function fetchClaude(url) {
     };
 
     const [conversationResponse] = await Promise.all([
-      page.waitForResponse(isConversationResponse, { timeout: 45000 }),
-      page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }),
+      page.waitForResponse(isConversationResponse, { timeout: useProxy ? 45000 : 15000 }),
+      page.goto(url, { waitUntil: 'domcontentloaded', timeout: useProxy ? 45000 : 20000 }),
     ]);
 
     const conversationData = await conversationResponse.json();
@@ -132,7 +128,6 @@ async function fetchClaude(url) {
   }
 }
 
-// Flattens a ChatGPT message's `parts` array (text and code blocks) to a string.
 function extractPartsText(parts) {
   return (parts || []).map(p => {
     if (typeof p === 'string') return p;
@@ -142,11 +137,9 @@ function extractPartsText(parts) {
   }).filter(Boolean).join('\n').trim();
 }
 
-// Walks ChatGPT's __NEXT_DATA__ message tree into an ordered list of turns,
-// falling back to the raw DOM text if the tree is missing or unparseable.
 function parseChatGPT({ html, nextData, domTurns }, url) {
   if (nextData) {
-    // ChatGPT's Next.js payload shape has changed across releases — try each known path
+    // Checks each known location for the message tree in the payload.
     const data =
       nextData?.props?.pageProps?.serverResponse?.data ||
       nextData?.props?.pageProps?.data ||
@@ -187,9 +180,6 @@ function parseChatGPT({ html, nextData, domTurns }, url) {
   throw new Error('Could not extract ChatGPT conversation. The link may be private or expired.');
 }
 
-// Converts Claude's intercepted API payload into an ordered list of turns.
-// Structured content blocks are preferred over the plain-text `msg.text`
-// field since they preserve formatting; msg.text is a last-resort fallback.
 function parseClaude(data, url) {
   if (!data) throw new Error('No data intercepted from Claude. The link may be private, expired, or the page structure changed.');
 
@@ -239,6 +229,28 @@ function buildMarkdown({ title, turns, url }) {
   return lines.join('\n');
 }
 
+async function getChatGPT(url, useProxy) {
+  const data = await fetchChatGPT(url, useProxy);
+  return parseChatGPT(data, url);
+}
+
+async function getClaude(url, useProxy) {
+  const data = await fetchClaude(url, useProxy);
+  return parseClaude(data, url);
+}
+
+// Attempts a direct request first; retries through the proxy only if the
+// direct attempt fails and a proxy key is configured.
+async function extractWithProxyFallback(fn) {
+  try {
+    return await fn(false);
+  } catch (err) {
+    if (!USE_PROXY) throw err;
+    console.log('Direct attempt failed, retrying via proxy:', err.message);
+    return await fn(true);
+  }
+}
+
 app.post('/extract', async (req, res) => {
   const { url, bot } = req.body;
   if (!url) return res.status(400).json({ error: 'No URL provided.' });
@@ -251,11 +263,11 @@ app.post('/extract', async (req, res) => {
 
   try {
     if (bot === 'chatgpt') {
-      const page = await fetchChatGPT(url);
-      return res.json({ markdown: buildMarkdown(parseChatGPT(page, url)) });
+      const result = await extractWithProxyFallback((useProxy) => getChatGPT(url, useProxy));
+      return res.json({ markdown: buildMarkdown(result) });
     } else {
-      const data = await fetchClaude(url);
-      return res.json({ markdown: buildMarkdown(parseClaude(data, url)) });
+      const result = await extractWithProxyFallback((useProxy) => getClaude(url, useProxy));
+      return res.json({ markdown: buildMarkdown(result) });
     }
   } catch (err) {
     console.error('Extraction error:', err.message);
@@ -263,15 +275,15 @@ app.post('/extract', async (req, res) => {
   }
 });
 
-// Diagnostic endpoint: returns the raw shape of Claude's intercepted response
-// instead of parsed Markdown, useful when parseClaude() needs debugging.
+// Diagnostic endpoint returning the raw shape of Claude's intercepted
+// response, for use when parseClaude() requires debugging.
 app.post('/debug-claude', async (req, res) => {
-  const { url } = req.body;
-  const browser = await puppeteer.launch(LAUNCH_OPTIONS());
+  const { url, useProxy = false } = req.body;
+  const browser = await puppeteer.launch(LAUNCH_OPTIONS(useProxy && USE_PROXY));
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
-    await preparePage(page);
+    await preparePage(page, useProxy && USE_PROXY);
 
     const isConversationResponse = (r) =>
       r.url().includes('/api/chat_snapshots/') ||
@@ -308,11 +320,11 @@ app.post('/debug-claude', async (req, res) => {
 
 const server = app.listen(PORT, () => {
   console.log(`✓ Chat Extractor running at http://localhost:${PORT}`);
-  console.log(USE_PROXY ? '✓ Proxy mode: ON (ScraperAPI)' : '⚠ Proxy mode: OFF (no SCRAPERAPI_KEY set — requests go out on this host\'s raw IP)');
+  console.log(USE_PROXY ? '✓ Proxy fallback: available (ScraperAPI, used only if direct attempts fail)' : '⚠ Proxy fallback: OFF (no SCRAPERAPI_KEY set — all requests go out on this host\'s raw IP)');
 });
 
-// Extraction requests can run 30-80s (proxy latency + page render waits),
-// longer than Render's reverse-proxy default. These keep the connection
-// alive so long requests aren't cut off mid-response.
-server.keepAliveTimeout = 120000;
-server.headersTimeout = 120000;
+// The worst case is a failed direct attempt followed by a full proxied
+// retry, sequentially; 180s provides headroom under Render's reverse-proxy
+// cutoff.
+server.keepAliveTimeout = 180000;
+server.headersTimeout = 180000;

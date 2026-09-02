@@ -1,7 +1,6 @@
 FROM node:20-slim
 
-# Install Chromium via apt instead of Puppeteer's own downloader — avoids the
-# fragile download/unzip step that fails silently on some build environments.
+# Installs Chromium via apt for Puppeteer to use.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     fonts-liberation \
@@ -22,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Point Puppeteer at the apt-installed Chromium and skip its own download.
+# Directs Puppeteer to the apt-installed Chromium binary.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
