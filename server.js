@@ -1,6 +1,7 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -228,7 +229,40 @@ function buildMarkdown({ title, turns, url }) {
   return lines.join('\n');
 }
 
-app.post('/extract', async (req, res) => {
+// Extraction can take up to ~80s through the proxy, longer than most
+// reverse proxies hold a single request open for. Jobs run in the
+// background; the client polls for status instead of waiting on one
+// long-lived connection.
+const jobs = new Map(); // jobId -> { status: 'pending' | 'done' | 'error', markdown, error, createdAt }
+
+function createJob() {
+  const jobId = crypto.randomUUID();
+  jobs.set(jobId, { status: 'pending', markdown: null, error: null, createdAt: Date.now() });
+  return jobId;
+}
+
+function runJob(jobId, url, bot) {
+  const task = bot === 'chatgpt' ? fetchChatGPT(url).then(page => parseChatGPT(page, url)) : fetchClaude(url).then(data => parseClaude(data, url));
+
+  task
+    .then(result => {
+      jobs.set(jobId, { status: 'done', markdown: buildMarkdown(result), error: null, createdAt: jobs.get(jobId).createdAt });
+    })
+    .catch(err => {
+      console.error('Extraction error:', err.message);
+      jobs.set(jobId, { status: 'error', markdown: null, error: err.message, createdAt: jobs.get(jobId).createdAt });
+    });
+}
+
+// Jobs older than 10 minutes are discarded to bound memory use.
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [id, job] of jobs) {
+    if (job.createdAt < cutoff) jobs.delete(id);
+  }
+}, 60 * 1000);
+
+app.post('/extract', (req, res) => {
   const { url, bot } = req.body;
   if (!url) return res.status(400).json({ error: 'No URL provided.' });
   if (!['chatgpt', 'claude'].includes(bot)) return res.status(400).json({ error: 'bot must be "chatgpt" or "claude".' });
@@ -238,18 +272,15 @@ app.post('/extract', async (req, res) => {
     return res.status(400).json({ error: `URL doesn't look like a ${bot === 'chatgpt' ? 'ChatGPT' : 'Claude'} share link. Expected: ${validDomain}` });
   }
 
-  try {
-    if (bot === 'chatgpt') {
-      const page = await fetchChatGPT(url);
-      return res.json({ markdown: buildMarkdown(parseChatGPT(page, url)) });
-    } else {
-      const data = await fetchClaude(url);
-      return res.json({ markdown: buildMarkdown(parseClaude(data, url)) });
-    }
-  } catch (err) {
-    console.error('Extraction error:', err.message);
-    return res.status(500).json({ error: err.message });
-  }
+  const jobId = createJob();
+  runJob(jobId, url, bot);
+  res.status(202).json({ jobId });
+});
+
+app.get('/extract/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found or expired.' });
+  res.json(job);
 });
 
 // Diagnostic endpoint returning the raw shape of Claude's intercepted

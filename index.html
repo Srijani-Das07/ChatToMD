@@ -12,9 +12,9 @@
       --bg: #0e0e10;
       --surface: #18181c;
       --border: #2e2e36;
-      --accent-gpt: #c8f04a;
-      --accent-claude: #d4a8ff;
-      --accent: #c8f04a;
+      --accent-gpt: #2dd4bf;
+      --accent-claude: #c2a0e4;
+      --accent: #59d5c5;
       --text: #e8e8ec;
       --muted: #6b6b78;
       --error: #ff5c5c;
@@ -289,7 +289,7 @@
       chatgpt: {
         placeholder: 'https://chatgpt.com/share/...',
         hint: 'ChatGPT: Open the chat → Share → Copy link → paste here.',
-        accent: '#c8f04a',
+        accent: '#2dd4bf',
       },
       claude: {
         placeholder: 'https://claude.ai/share/...',
@@ -324,37 +324,69 @@
 
       dot.className = 'status-dot active';
       outputBox.className = '';
-      outputBox.textContent = 'Launching browser and fetching conversation...\n(this takes ~20–30 seconds)';
+      outputBox.textContent = 'Launching browser and fetching conversation...\n(this can take up to a minute)';
       downloadBtn.style.display = 'none';
       btn.disabled = true;
 
       try {
-        const res = await fetch('/extract', {
+        const startRes = await fetch('/extract', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url, bot: selectedBot })
         });
 
-        const data = await res.json();
+        const startData = await startRes.json();
 
-        if (!res.ok || data.error) {
-          setOutput('✗ Error: ' + (data.error || 'Unknown error'), 'error');
+        if (!startRes.ok || startData.error) {
+          setOutput('✗ Error: ' + (startData.error || 'Unknown error'), 'error');
           dot.className = 'status-dot error';
+          btn.disabled = false;
           return;
         }
 
-        markdownContent = data.markdown;
-        outputBox.className = 'has-content';
-        outputBox.textContent = markdownContent;
-        dot.className = 'status-dot done';
-        downloadBtn.style.display = 'inline-block';
+        await pollJob(startData.jobId);
 
       } catch (err) {
         setOutput('✗ Could not connect to server.\nMake sure the server is running with: npm start', 'error');
         dot.className = 'status-dot error';
-      } finally {
         btn.disabled = false;
       }
+    }
+
+    async function pollJob(jobId) {
+      const outputBox = document.getElementById('output-box');
+      const dot = document.getElementById('status-dot');
+      const downloadBtn = document.getElementById('download-btn');
+      const btn = document.getElementById('extract-btn');
+
+      const maxAttempts = 40; // ~2 minutes at 3s intervals
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(r => setTimeout(r, 3000));
+
+        const res = await fetch(`/extract/${jobId}`);
+        const job = await res.json();
+
+        if (!res.ok || job.error) {
+          setOutput('✗ Error: ' + (job.error || 'Unknown error'), 'error');
+          dot.className = 'status-dot error';
+          btn.disabled = false;
+          return;
+        }
+
+        if (job.status === 'done') {
+          markdownContent = job.markdown;
+          outputBox.className = 'has-content';
+          outputBox.textContent = markdownContent;
+          dot.className = 'status-dot done';
+          downloadBtn.style.display = 'inline-block';
+          btn.disabled = false;
+          return;
+        }
+      }
+
+      setOutput('✗ Error: Extraction is taking longer than expected. Please try again.', 'error');
+      dot.className = 'status-dot error';
+      btn.disabled = false;
     }
 
     function setOutput(msg, type) {
