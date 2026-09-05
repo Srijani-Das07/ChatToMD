@@ -32,9 +32,13 @@ const LAUNCH_OPTIONS = () => ({
   ],
 });
 
-async function preparePage(page) {
+async function preparePage(page, sessionId) {
   if (USE_PROXY) {
-    await page.authenticate({ username: 'scraperapi', password: SCRAPERAPI_KEY });
+    // session_number pins this whole browser session to one egress IP.
+    // Without it, ScraperAPI rotates IPs per-connection, which breaks
+    // Cloudflare's clearance cookie across the page's follow-up requests.
+    const username = sessionId ? `scraperapi.session_number=${sessionId}` : 'scraperapi';
+    await page.authenticate({ username, password: SCRAPERAPI_KEY });
   }
   await page.setRequestInterception(true);
   page.on('request', (req) => {
@@ -54,12 +58,12 @@ async function fetchChatGPT(url) {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
-    await preparePage(page);
+    await preparePage(page, crypto.randomInt(1, 1_000_000));
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     try {
-      await page.waitForSelector('[data-message-author-role]', { timeout: 30000 });
+      await page.waitForSelector('[data-message-author-role]', { timeout: 45000 });
     } catch {
       await new Promise(r => setTimeout(r, 8000));
     }
@@ -103,7 +107,7 @@ async function fetchClaude(url) {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
-    await preparePage(page);
+    await preparePage(page, crypto.randomInt(1, 1_000_000));
 
     // The response listener must be registered before navigation starts,
     // otherwise the target response may be missed.
@@ -117,8 +121,8 @@ async function fetchClaude(url) {
     };
 
     const [conversationResponse] = await Promise.all([
-      page.waitForResponse(isConversationResponse, { timeout: 45000 }),
-      page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }),
+      page.waitForResponse(isConversationResponse, { timeout: 60000 }),
+      page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }),
     ]);
 
     const conversationData = await conversationResponse.json();
@@ -291,7 +295,7 @@ app.post('/debug-claude', async (req, res) => {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
-    await preparePage(page);
+    await preparePage(page, crypto.randomInt(1, 1_000_000));
 
     const isConversationResponse = (r) =>
       r.url().includes('/api/chat_snapshots/') ||
@@ -301,8 +305,8 @@ app.post('/debug-claude', async (req, res) => {
     let captured = null;
     try {
       const [response] = await Promise.all([
-        page.waitForResponse(isConversationResponse, { timeout: 45000 }),
-        page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }),
+        page.waitForResponse(isConversationResponse, { timeout: 60000 }),
+        page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }),
       ]);
       captured = await response.json();
     } catch (e) {
