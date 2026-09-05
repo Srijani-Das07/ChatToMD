@@ -109,6 +109,13 @@ async function fetchClaude(url) {
     await page.setUserAgent(UA);
     await preparePage(page, crypto.randomInt(1, 1_000_000));
 
+    // Track every response seen so a failure tells us what actually
+    // loaded (real page vs. a Cloudflare interstitial vs. nothing).
+    const seenResponses = [];
+    page.on('response', (res) => {
+      seenResponses.push(`${res.status()} ${res.url()}`);
+    });
+
     // The response listener must be registered before navigation starts,
     // otherwise the target response may be missed.
     const isConversationResponse = (res) => {
@@ -120,11 +127,29 @@ async function fetchClaude(url) {
       );
     };
 
-    const [conversationResponse] = await Promise.all([
-      page.waitForResponse(isConversationResponse, { timeout: 60000 }),
-      page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }),
-    ]);
+    let gotoErr = null;
+    let waitErr = null;
+    const gotoPromise = page
+      .goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
+      .catch((e) => { gotoErr = e; throw e; });
+    const waitPromise = page
+      .waitForResponse(isConversationResponse, { timeout: 60000 })
+      .catch((e) => { waitErr = e; throw e; });
 
+    let conversationResponse;
+    try {
+      [conversationResponse] = await Promise.all([waitPromise, gotoPromise]);
+    } catch (e) {
+      const title = await page.title().catch(() => 'n/a');
+      console.error('[Claude] goto error:', gotoErr ? gotoErr.message : 'none (goto resolved)');
+      console.error('[Claude] waitForResponse error:', waitErr ? waitErr.message : 'none (response matched)');
+      console.error('[Claude] page title at failure:', title);
+      console.error(`[Claude] responses seen (${seenResponses.length} total), last 25:`);
+      console.error(seenResponses.slice(-25).join('\n'));
+      throw e;
+    }
+
+    console.log('[Claude] matched conversation response:', conversationResponse.url());
     const conversationData = await conversationResponse.json();
     return conversationData;
   } finally {
